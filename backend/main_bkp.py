@@ -2,12 +2,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import yt_dlp
 import google.generativeai as genai
 from youtube_transcript_api import YouTubeTranscriptApi
 import re
 import os
 from dotenv import load_dotenv
-import requests
 
 # Load environment variables
 load_dotenv()
@@ -69,36 +69,14 @@ def extract_video_id(url: str) -> str:
             return match.group(1)
     raise HTTPException(status_code=400, detail="Invalid YouTube URL")
 
-def get_video_details(video_id: str):
-    api_key = os.getenv("YOUTUBE_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="YouTube API key not configured")
-
-    api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id={video_id}&key={api_key}"
-
+def get_video_details(video_url: str):
+    ydl_opts = {'quiet': True}
     try:
-        response = requests.get(api_url)
-        response.raise_for_status()
-        data = response.json()
-
-        if not data["items"]:
-            raise HTTPException(status_code=404, detail="Video not found")
-
-        video_info = data["items"][0]
-        snippet = video_info.get("snippet", {})
-        statistics = video_info.get("statistics", {})
-        content_details = video_info.get("contentDetails", {})
-
-        return {
-            "title": snippet.get("title", ""),
-            "description": snippet.get("description", ""),
-            "tags": snippet.get("tags", []),
-            "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
-            "view_count": int(statistics.get("viewCount", 0)),
-            "duration": content_details.get("duration", "")
-        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+        return info
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch video details: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch video details: {str(e)}")
 
 def get_youtube_transcript(video_id: str) -> str:
     try:
@@ -178,13 +156,13 @@ def calculate_seo_score(title: str, description: str, tags: list, transcript_ava
 async def analyze_video(video: VideoURL):
     try:
         # Get API key from environment variable
-        gemini_api_key = os.getenv("GEMINI_API_KEY")
-        if not gemini_api_key:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
             raise HTTPException(status_code=500, detail="Gemini API key not configured")
 
         # Extract video ID and get details
         video_id = extract_video_id(video.url)
-        video_info = get_video_details(video_id)
+        video_info = get_video_details(video.url)
         
         # Get transcript
         transcript_text = get_youtube_transcript(video_id)
@@ -195,7 +173,7 @@ async def analyze_video(video: VideoURL):
         tags = video_info.get("tags", [])
         thumbnail_url = video_info.get("thumbnail", "")
         views = video_info.get("view_count", 0)
-        length = video_info.get("duration", "")
+        length = video_info.get("duration", 0)
         
         # Get Gemini analysis
         gemini_analysis = analyze_video_with_gemini(
@@ -204,7 +182,7 @@ async def analyze_video(video: VideoURL):
             title,
             description,
             tags,
-            gemini_api_key
+            api_key
         )
         
         # Calculate SEO score
